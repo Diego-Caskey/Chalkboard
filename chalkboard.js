@@ -57,9 +57,92 @@
   function applyNoteStyle(el) {
     const n = nodes.get(el.id); if (!n) return;
     const c = n.querySelector('.note-content'); if (!c) return;
+    // content is laid out once at base size (fw x fh, BASE_FONT) and magnified
+    // with a transform, so wrapping never drifts while scaling.
+    c.style.width = el.fw + 'px';
+    c.style.height = el.fh + 'px';
     const s = el.scale || 1;
-    c.style.fontSize = (BASE_FONT * s) + 'px';
-    c.style.padding = (BASE_PADY * s) + 'px ' + (BASE_PADX * s) + 'px';
+    if (editingId === el.id) { c.style.transform = 'scale(' + s + ')'; return; }
+    // clamp + apply vertical scroll for overflowing notes (base px translate)
+    const max = Math.max(0, c.scrollHeight - el.fh);
+    if (!el.scrollY || el.scrollY < 0) el.scrollY = 0;
+    if (el.scrollY > max) el.scrollY = max;
+    c.style.transform = 'scale(' + s + ') translateY(' + (-el.scrollY) + 'px)';
+  }
+  function noteMaxScroll(el) {
+    const n = nodes.get(el.id); if (!n) return 0;
+    const c = n.querySelector('.note-content'); if (!c) return 0;
+    return Math.max(0, c.scrollHeight - el.fh);
+  }
+
+  // ---------- plaintext / markdown ----------
+  // Notes hold plain text only. Rich paste is converted to Markdown; literal
+  // bullet glyphs become "- "; emojis (ordinary characters) pass through.
+  function normalizePlain(s) {
+    if (!s) return '';
+    return String(s)
+      .replace(/\r\n?/g, '\n')
+      .replace(/\u00a0/g, ' ')                       // nbsp -> space
+      .replace(/^[ \t]*[•◦▪‣·●○∙]\s+/gm, '- ')       // bullet glyphs -> dash
+      .replace(/[ \t]+\n/g, '\n')                    // trailing whitespace
+      .replace(/\n{3,}/g, '\n\n')                    // collapse big gaps
+      .replace(/[ \t]+$/, '')
+      .trim();
+  }
+
+  function htmlToMarkdown(html) {
+    let doc;
+    try { doc = new DOMParser().parseFromString(html, 'text/html'); }
+    catch (e) { return normalizePlain(html); }
+    doc.querySelectorAll('style,script,head,meta,title').forEach((n) => n.remove());
+    return normalizePlain(mdSerialize(doc.body));
+  }
+  function mdInline(node) { return mdSerialize(node).replace(/\s+/g, ' ').trim(); }
+  function mdList(listEl, ordered, depth) {
+    const pad = '  '.repeat(depth || 0);
+    const lines = [];
+    let i = 1;
+    Array.from(listEl.children).forEach((li) => {
+      if (!li.tagName || li.tagName.toLowerCase() !== 'li') return;
+      const marker = ordered ? (i++ + '. ') : '- ';
+      let inline = '', nested = '';
+      li.childNodes.forEach((cn) => {
+        if (cn.nodeType === 1 && /^(ul|ol)$/i.test(cn.tagName)) {
+          nested += '\n' + mdList(cn, cn.tagName.toLowerCase() === 'ol', (depth || 0) + 1);
+        } else {
+          inline += cn.nodeType === 3 ? cn.nodeValue : mdSerialize(cn);
+        }
+      });
+      lines.push(pad + marker + inline.replace(/\s+/g, ' ').trim() + nested);
+    });
+    return lines.join('\n');
+  }
+  function mdSerialize(node) {
+    let out = '';
+    node.childNodes.forEach((child) => {
+      if (child.nodeType === 3) { out += child.nodeValue.replace(/\s+/g, ' '); return; }
+      if (child.nodeType !== 1) return;
+      const tag = child.tagName.toLowerCase();
+      switch (tag) {
+        case 'br': out += '\n'; break;
+        case 'hr': out += '\n---\n'; break;
+        case 'strong': case 'b': { const t = mdInline(child); out += t ? '**' + t + '**' : ''; break; }
+        case 'em': case 'i': { const t = mdInline(child); out += t ? '*' + t + '*' : ''; break; }
+        case 'code': { const t = mdInline(child); out += t ? '`' + t + '`' : ''; break; }
+        case 'a': { const t = mdInline(child); const href = child.getAttribute('href'); out += (href && t) ? '[' + t + '](' + href + ')' : t; break; }
+        case 'h1': case 'h2': case 'h3': case 'h4': case 'h5': case 'h6':
+          out += '\n' + '#'.repeat(+tag[1]) + ' ' + mdInline(child) + '\n'; break;
+        case 'ul': out += '\n' + mdList(child, false, 0) + '\n'; break;
+        case 'ol': out += '\n' + mdList(child, true, 0) + '\n'; break;
+        case 'li': out += mdSerialize(child); break;
+        case 'blockquote': out += '\n> ' + mdInline(child) + '\n'; break;
+        case 'p': case 'div': case 'section': case 'tr':
+          out += '\n' + mdSerialize(child) + '\n'; break;
+        case 'td': case 'th': out += mdSerialize(child) + ' '; break;
+        default: out += mdSerialize(child);
+      }
+    });
+    return out;
   }
 
   // ---------- coordinate transforms ----------
@@ -362,25 +445,50 @@
   function startEditing(el) {
     select(el.id);
     editingId = el.id;
+    el.scrollY = 0;
     const n = nodes.get(el.id);
     n.classList.add('editing');
     const c = n.querySelector('.note-content');
+    applyNoteStyle(el);            // drop scroll translate while editing
     c.contentEditable = 'true';
     c.focus();
     // place caret at end
     const r = document.createRange();
     r.selectNodeContents(c); r.collapse(false);
     const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(r);
+    c.addEventListener('paste', onNotePaste);
     c.addEventListener('blur', onNoteBlur, { once: true });
+  }
+  // paste inside a note: convert rich/special text to plain markdown, insert as text
+  function onNotePaste(e) {
+    e.preventDefault();
+    const cd = e.clipboardData;
+    if (!cd) return;
+    const html = cd.getData('text/html');
+    const plain = cd.getData('text/plain');
+    const out = html ? htmlToMarkdown(html) : normalizePlain(plain);
+    insertPlainText(out);
+  }
+  function insertPlainText(text) {
+    const sel = window.getSelection();
+    if (!sel || !sel.rangeCount) return;
+    const r = sel.getRangeAt(0);
+    r.deleteContents();
+    r.insertNode(document.createTextNode(text));
+    r.collapse(false);
+    sel.removeAllRanges(); sel.addRange(r);
   }
   function onNoteBlur(e) {
     const n = e.target.closest('.el');
     if (!n) return;
     const el = state.elements.find((x) => x.id === n.dataset.id);
-    if (el) { el.text = e.target.textContent; scheduleSave(); }
+    // innerText preserves line breaks (textContent collapses <div>/<br> boundaries)
+    if (el) { el.text = normalizePlain(e.target.innerText); e.target.textContent = el.text; scheduleSave(); }
     n.classList.remove('editing');
     e.target.contentEditable = 'false';
+    e.target.removeEventListener('paste', onNotePaste);
     if (editingId === (el && el.id)) editingId = null;
+    if (el) applyNoteStyle(el);
   }
   function stopEditing() {
     if (!editingId) return;
@@ -407,7 +515,7 @@
     return el;
   }
 
-  function addImageFromSrc(src, wx, wy) {
+  function addImageFromSrc(src, wx, wy, fallbackLink) {
     const img = new Image();
     img.onload = () => {
       const max = 360;
@@ -416,6 +524,12 @@
       w = Math.max(40, w * sc); h = Math.max(30, h * sc);
       const el = addElement({ type: 'image', x: wx - w / 2, y: wy - h / 2, w, h, src, _aspect: img.naturalWidth / img.naturalHeight });
       select(el.id);
+    };
+    img.onerror = () => {
+      // remote image blocked (hotlink/CORS) — keep the link as a note so nothing is lost
+      const link = fallbackLink || src;
+      addNote(wx, wy, link);
+      toast('Could not load image \u2014 kept the link');
     };
     img.src = src;
   }
@@ -500,6 +614,24 @@
 
   // ---------- wheel: pan + zoom ----------
   viewport.addEventListener('wheel', (e) => {
+    // hovering a note: scroll its content instead of the canvas (when it overflows)
+    if (!(e.ctrlKey || e.metaKey || e.shiftKey)) {
+      const noteNode = e.target.closest && e.target.closest('.el.note');
+      if (noteNode) {
+        const el = state.elements.find((x) => x.id === noteNode.dataset.id);
+        if (el) {
+          if (editingId === el.id) return;        // let the editor scroll natively
+          const max = noteMaxScroll(el);
+          if (max > 0) {
+            e.preventDefault();
+            el.scrollY = clamp((el.scrollY || 0) + e.deltaY / (el.scale || 1), 0, max);
+            applyNoteStyle(el);
+            scheduleSave();
+            return;
+          }
+        }
+      }
+    }
     e.preventDefault();
     if (e.ctrlKey || e.metaKey || e.shiftKey) {
       // shift-wheel: many devices report vertical wheel as deltaX while shift is held
@@ -554,10 +686,11 @@
   });
 
   // ---------- drag & drop ----------
-  let dropCounter = 0;
   ['dragenter', 'dragover'].forEach((ev) => window.addEventListener(ev, (e) => {
-    if (e.dataTransfer && Array.from(e.dataTransfer.types).includes('Files')) {
+    const types = e.dataTransfer ? Array.from(e.dataTransfer.types) : [];
+    if (types.includes('Files') || types.includes('text/uri-list') || types.includes('text/html') || types.includes('text/plain')) {
       e.preventDefault();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
       viewport.classList.add('dropping');
     }
   }));
@@ -572,8 +705,19 @@
       Array.from(files).forEach((f) => addFile(f, w.x, w.y, multi));
       return;
     }
+    // image dragged from another tab/app (Google Images, etc.)
+    const dtHtml = e.dataTransfer.getData('text/html');
+    const uri = (e.dataTransfer.getData('text/uri-list') || '').split('\n').find((l) => l && !l.startsWith('#')) || '';
+    let imgUrl = '';
+    if (dtHtml) { const m = /<img[^>]+src\s*=\s*["']([^"']+)["']/i.exec(dtHtml); if (m) imgUrl = m[1]; }
+    if (!imgUrl) {
+      const u = uri.trim();
+      if (/^data:image\//i.test(u) || /^https?:\/\/[^\s]+\.(png|jpe?g|gif|webp|svg|bmp|avif)(\?[^\s]*)?$/i.test(u)) imgUrl = u;
+    }
+    if (imgUrl) { addImageFromSrc(imgUrl, w.x, w.y, uri.trim() || imgUrl); return; }
     const txt = e.dataTransfer.getData('text/plain');
-    if (txt) addNote(w.x, w.y, txt);
+    if (dtHtml) addNote(w.x, w.y, htmlToMarkdown(dtHtml));
+    else if (txt) addNote(w.x, w.y, normalizePlain(txt));
   });
 
   // ---------- paste ----------
@@ -590,8 +734,10 @@
       files.forEach((f) => addFile(f, center.x, center.y, multi));
       return;
     }
+    const cbHtml = e.clipboardData.getData('text/html');
     const text = e.clipboardData.getData('text/plain');
-    if (text) { e.preventDefault(); addNote(center.x, center.y, text); }
+    if (cbHtml) { e.preventDefault(); addNote(center.x, center.y, htmlToMarkdown(cbHtml)); }
+    else if (text) { e.preventDefault(); addNote(center.x, center.y, normalizePlain(text)); }
   });
 
   // ---------- keyboard ----------
@@ -624,11 +770,41 @@
     await Store.del('board');
     toast('Board cleared');
   });
+  // in-app Save dialog: resolves to the chosen base name, or null if cancelled
+  function promptFilename(def) {
+    return new Promise((resolve) => {
+      const wrap = $('#savewrap');
+      const input = $('#savename');
+      const base = (def || 'Chalkboard').replace(/\.pdf$/i, '');
+      input.value = base;
+      wrap.classList.add('active');
+      input.focus(); input.select();
+      let done = false;
+      function finish(val) {
+        if (done) return; done = true;
+        wrap.classList.remove('active');
+        $('#saveok').removeEventListener('click', onOk);
+        $('#savecancel').removeEventListener('click', onCancel);
+        wrap.removeEventListener('pointerdown', onBackdrop);
+        input.removeEventListener('keydown', onKey);
+        resolve(val);
+      }
+      const onOk = () => finish(input.value.trim() || base);
+      const onCancel = () => finish(null);
+      const onBackdrop = (e) => { if (e.target === wrap) finish(null); };
+      const onKey = (e) => { if (e.key === 'Enter') { e.preventDefault(); onOk(); } else if (e.key === 'Escape') { e.preventDefault(); onCancel(); } };
+      $('#saveok').addEventListener('click', onOk);
+      $('#savecancel').addEventListener('click', onCancel);
+      wrap.addEventListener('pointerdown', onBackdrop);
+      input.addEventListener('keydown', onKey);
+    });
+  }
+
   $('#tl-pdf').addEventListener('click', async () => {
     if (!state.elements.length) { toast('Nothing to export yet'); return; }
     select(null);
     toast('Building PDF\u2026');
-    try { await window.Export.toPDF({ viewport, world, state, applyView }); toast('PDF saved'); }
+    try { const r = await window.Export.toPDF({ viewport, world, state, applyView, promptFilename }); if (r !== 'cancelled') toast('PDF saved'); }
     catch (err) { console.error(err); toast('Export failed'); }
   });
 
@@ -705,17 +881,22 @@
             r.onload = () => addImageFromSrc(r.result, wx, wy);
             r.readAsDataURL(blob);
             handled = true;
+          } else if (it.types.includes('text/html')) {
+            const blob = await it.getType('text/html');
+            const html = await blob.text();
+            if (html) addNote(wx, wy, htmlToMarkdown(html));
+            handled = true;
           } else if (it.types.includes('text/plain')) {
             const blob = await it.getType('text/plain');
             const text = await blob.text();
-            if (text) addNote(wx, wy, text);
+            if (text) addNote(wx, wy, normalizePlain(text));
             handled = true;
           }
         }
         if (handled) return;
       }
       const text = await navigator.clipboard.readText();
-      if (text) addNote(wx, wy, text);
+      if (text) addNote(wx, wy, normalizePlain(text));
       else toast('Clipboard is empty');
     } catch (err) {
       toast('Allow clipboard access, or press \u2318/Ctrl + V');

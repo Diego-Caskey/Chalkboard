@@ -93,10 +93,13 @@ body {
   border: 1px solid var(--card-edge);
   border-radius: 3px;
   box-shadow: var(--shadow);
+  overflow: hidden;
 }
 .el.note .note-content {
-  width: 100%;
-  height: 100%;
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform-origin: 0 0;
   padding: 12px 14px;
   font-size: 16px;
   line-height: 1.4;
@@ -107,7 +110,7 @@ body {
   word-break: break-word;
   cursor: default;
 }
-.el.note.editing { box-shadow: var(--shadow-lift); }
+.el.note.editing { box-shadow: var(--shadow-lift); overflow: visible; }
 .el.note.editing .note-content { cursor: text; user-select: text; overflow: auto; }
 .el.note .note-content:empty::before {
   content: "Type\2026";
@@ -356,3 +359,39 @@ body {
 /* hide chrome + grid while exporting to pdf */
 #viewport.exporting { background-image: none; background-color: #faf9f6; }
 .exporting-hide { display: none !important; }
+
+/* in-app Save dialog (fallback when the native picker is blocked, e.g. in an iframe) */
+#savewrap {
+  position: fixed; inset: 0; z-index: 300;
+  display: none; align-items: center; justify-content: center;
+  background: rgba(20,19,16,.34);
+}
+#savewrap.active { display: flex; }
+#savecard {
+  width: 360px; max-width: calc(100vw - 32px);
+  background: var(--panel);
+  border: 1px solid var(--panel-edge);
+  border-radius: 14px;
+  box-shadow: var(--shadow-lift);
+  padding: 20px;
+  color: var(--panel-text);
+}
+#savecard h2 { margin: 0 0 4px; font-size: 16px; font-weight: 650; letter-spacing: -.01em; }
+#savecard p { margin: 0 0 14px; font-size: 12.5px; line-height: 1.5; color: var(--ui); }
+#savecard .field { display: flex; align-items: center; gap: 0; border: 1px solid var(--panel-edge); border-radius: 9px; overflow: hidden; background: var(--bg); }
+#savecard input {
+  flex: 1; min-width: 0; border: 0; outline: 0; background: transparent;
+  padding: 10px 12px; font-size: 14px; color: var(--panel-text);
+  font-family: inherit;
+}
+#savecard .suffix { padding: 0 12px; font-size: 13px; color: var(--ui); border-left: 1px solid var(--panel-edge); align-self: stretch; display: flex; align-items: center; }
+#savecard .row { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+#savecard button {
+  -webkit-appearance: none; border: 1px solid transparent; cursor: pointer;
+  height: 36px; padding: 0 16px; border-radius: 9px; font-size: 13.5px; font-weight: 600;
+  font-family: inherit;
+}
+#savecard .cancel { background: transparent; color: var(--ui); border-color: var(--panel-edge); }
+#savecard .cancel:hover { background: var(--panel-hover); color: var(--panel-text); }
+#savecard .save { background: var(--accent); color: #fff; }
+#savecard .save:hover { filter: brightness(1.06); }

@@ -61,7 +61,40 @@
     const { jsPDF } = window.jspdf;
     const pdf = new jsPDF({ orientation: W >= H ? 'landscape' : 'portrait', unit: 'px', format: [W, H], compress: true });
     pdf.addImage(canvas.toDataURL('image/jpeg', 0.92), 'JPEG', 0, 0, W, H);
-    pdf.save('chalkboard.pdf');
+
+    const blob = pdf.output('blob');
+
+    // 1) True native "Save As" (choose name + folder) — needs a top-level context.
+    if (window.showSaveFilePicker) {
+      try {
+        const handle = await window.showSaveFilePicker({
+          suggestedName: 'Chalkboard.pdf',
+          types: [{ description: 'PDF document', accept: { 'application/pdf': ['.pdf'] } }],
+        });
+        const w = await handle.createWritable();
+        await w.write(blob);
+        await w.close();
+        return 'saved';
+      } catch (err) {
+        if (err && err.name === 'AbortError') return 'cancelled';   // user closed the dialog
+        // SecurityError (blocked in iframe), NotAllowedError, etc. -> fall through
+      }
+    }
+
+    // 2) Fallback: ask for a filename in-app, then download.
+    let name = 'Chalkboard.pdf';
+    if (typeof ctx.promptFilename === 'function') {
+      const chosen = await ctx.promptFilename('Chalkboard.pdf');
+      if (chosen === null) return 'cancelled';
+      name = chosen;
+    }
+    if (!/\.pdf$/i.test(name)) name += '.pdf';
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = name;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+    return 'saved';
   }
 
   window.Export = { toPDF, contentBounds };
