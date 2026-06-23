@@ -1,5 +1,6 @@
 :root {
   --bg: #f4f3ee;
+  --bg-invert: #2b2b2e;
   --dot: rgba(40, 38, 32, 0.10);
   --ink: #2b2a27;
   --ink-soft: #6c6a63;
@@ -9,7 +10,10 @@
   --chip: #ffffff;
   --accent: oklch(0.58 0.13 264);
   --accent-soft: oklch(0.58 0.13 264 / 0.18);
-  --green: oklch(0.56 0.14 150);
+  --green: oklch(0.50 0.16 150);
+  --green-soft: oklch(0.50 0.16 150 / 0.12);
+  --danger: oklch(0.53 0.20 27);
+  --danger-soft: oklch(0.53 0.20 27 / 0.12);
   --shadow: 0 1px 2px rgba(40,38,32,.06), 0 6px 18px rgba(40,38,32,.10);
   --shadow-lift: 0 2px 6px rgba(40,38,32,.10), 0 16px 40px rgba(40,38,32,.16);
   /* theme-aware UI tokens (chrome + popovers) */
@@ -25,6 +29,7 @@
 
 :root.dark {
   --bg: #2b2b2e;
+  --bg-invert: #f4f3ee;
   --dot: rgba(232, 230, 225, 0.14);
   --ui: #b8b6b0;
   --ui-hover: #f2f0eb;
@@ -37,6 +42,11 @@
   --shadow: 0 1px 2px rgba(0,0,0,.45), 0 8px 24px rgba(0,0,0,.55);
   --shadow-lift: 0 2px 8px rgba(0,0,0,.5), 0 18px 44px rgba(0,0,0,.62);
   --card-edge: rgba(0, 0, 0, 0.18);
+  /* brighter accents so they pop on the dark panel */
+  --green: oklch(0.80 0.17 152);
+  --green-soft: oklch(0.80 0.17 152 / 0.16);
+  --danger: oklch(0.72 0.18 25);
+  --danger-soft: oklch(0.72 0.18 25 / 0.16);
 }
 
 * { box-sizing: border-box; }
@@ -77,6 +87,8 @@ body {
   will-change: transform;
 }
 .el.is-selected { outline: none; }
+/* multi-select: ring each member (single selection uses #selbox instead) */
+body.multi-select .el.is-selected { outline: 2px solid var(--accent); outline-offset: 1px; }
 
 .el .media {
   width: 100%;
@@ -190,6 +202,21 @@ body {
   display: none;
 }
 #selbox.active { display: block; }
+
+/* marquee selection rectangle (screen space) */
+#marquee {
+  position: fixed;
+  z-index: 55;
+  display: none;
+  border: 1.5px solid var(--accent);
+  background: var(--accent-soft);
+  pointer-events: none;
+  border-radius: 1px;
+}
+#marquee.active { display: block; }
+/* hide resize/rotate handles unless exactly one element is selected */
+#selbox:not(.single) .handle,
+#selbox:not(.single) .rotate-arm { display: none; }
 #selbox .frame {
   position: absolute;
   inset: 0;
@@ -255,7 +282,7 @@ body {
 /* top-right tools fade until you approach */
 #tools { top: 14px; right: 14px; opacity: .42; }
 #tools:hover { opacity: 1; }
-#tools button.danger:hover { color: #c0584f; }
+#tools button.danger:hover { color: var(--danger); }
 
 /* bottom-left zoom */
 #zoom { bottom: 14px; left: 14px; opacity: .42; align-items: center; }
@@ -305,38 +332,31 @@ body {
 .ctx button:hover { background: var(--panel-hover); }
 .ctx button svg { width: 18px; height: 18px; flex: 0 0 auto; color: var(--ui); }
 .ctx button:hover svg { color: var(--panel-text); }
-.ctx button.danger { color: #c0584f; }
-.ctx button.danger svg { color: #c0584f; }
-.ctx button.danger:hover { background: rgba(192,88,79,.12); }
+.ctx button.danger { color: var(--danger); }
+.ctx button.danger svg { color: var(--danger); }
+.ctx button.danger:hover { background: var(--danger-soft); }
 .ctx button.add { color: var(--green); }
 .ctx button.add svg { color: var(--green); }
-.ctx button.add:hover { background: oklch(0.56 0.14 150 / 0.12); }
+.ctx button.add:hover { background: var(--green-soft); }
 .ctx button.add:hover svg { color: var(--green); }
 
-/* brand + theme toggle */
+/* brand wordmark (click to switch light / dark) */
 #brand {
   position: fixed; left: 14px; top: 14px; z-index: 70;
-  display: flex; align-items: center; gap: 8px;
+  display: flex; align-items: center;
   cursor: pointer; user-select: none;
-  border-radius: 9px; padding: 4px 8px 4px 4px;
-  transition: background .14s;
+  border-radius: 9px; padding: 5px 10px;
+  border: 1px solid transparent;
+  transition: background .14s, border-color .14s;
 }
-#brand:hover { background: var(--panel-hover); }
 #brand #mark {
   font-size: 13px; letter-spacing: .14em; text-transform: uppercase;
   color: var(--ui); font-weight: 600;
+  transition: color .14s;
 }
-#theme-toggle {
-  -webkit-appearance: none; border: none; background: transparent;
-  width: 26px; height: 26px; border-radius: 7px; padding: 0;
-  display: flex; align-items: center; justify-content: center;
-  color: var(--ui); cursor: pointer; pointer-events: none;
-}
-#brand:hover #mark, #brand:hover #theme-toggle { color: var(--ui-hover); }
-#theme-toggle svg { width: 17px; height: 17px; display: block; }
-#theme-toggle .moon { display: none; }
-:root.dark #theme-toggle .sun { display: none; }
-:root.dark #theme-toggle .moon { display: block; }
+/* hover: fill with the opposite mode's surface, text in the current mode's surface color */
+#brand:hover { background: var(--bg-invert); border-color: var(--bg-invert); }
+#brand:hover #mark { color: var(--bg); }
 
 /* drag-over feedback */
 #viewport.dropping::after {

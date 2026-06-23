@@ -10,7 +10,7 @@
     nextZ: 1,
   };
   const nodes = new Map();   // id -> DOM node
-  let selectedId = null;
+  let selectedIds = new Set();
   let editingId = null;
   let loaded = false;
 
@@ -266,43 +266,102 @@
     const n = nodes.get(id);
     if (n) n.remove();
     nodes.delete(id);
-    if (selectedId === id) select(null);
+    if (selectedIds.has(id)) { selectedIds.delete(id); document.body.classList.toggle('multi-select', selectedIds.size > 1); }
     refreshContentFlag();
     scheduleSave();
   }
 
   // ---------- selection ----------
-  function select(id) {
-    if (editingId && editingId !== id) stopEditing();
-    selectedId = id;
-    for (const [eid, n] of nodes) n.classList.toggle('is-selected', eid === id);
+  function setSelection(ids) {
+    const next = new Set(ids);
+    if (editingId && !next.has(editingId)) stopEditing();
+    selectedIds = next;
+    for (const [eid, n] of nodes) n.classList.toggle('is-selected', selectedIds.has(eid));
+    document.body.classList.toggle('multi-select', selectedIds.size > 1);
     updateSelbox();
-    if (!id) hideMenus();
+    if (!selectedIds.size) hideMenus();
   }
-  const getSelected = () => state.elements.find((e) => e.id === selectedId);
+  function select(id) { setSelection(id ? [id] : []); }
+  function toggleSelection(id) {
+    const s = new Set(selectedIds);
+    if (s.has(id)) s.delete(id); else s.add(id);
+    setSelection([...s]);
+  }
+  // single-element ops (resize/rotate handles) require exactly one selection
+  const getSelected = () => (selectedIds.size === 1 ? state.elements.find((e) => selectedIds.has(e.id)) : null);
+  const getSelectedEls = () => state.elements.filter((e) => selectedIds.has(e.id));
+
+  // world-space axis-aligned bounds of an element (rotation-aware)
+  function elAABB(el) {
+    const a = el.rot * Math.PI / 180;
+    const u = { x: Math.cos(a), y: Math.sin(a) };
+    const v = { x: -Math.sin(a), y: Math.cos(a) };
+    const c = { x: el.x + el.w / 2, y: el.y + el.h / 2 };
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const sx of [-1, 1]) for (const sy of [-1, 1]) {
+      const px = c.x + sx * (el.w / 2) * u.x + sy * (el.h / 2) * v.x;
+      const py = c.y + sx * (el.w / 2) * u.y + sy * (el.h / 2) * v.y;
+      if (px < minX) minX = px; if (px > maxX) maxX = px;
+      if (py < minY) minY = py; if (py > maxY) maxY = py;
+    }
+    return { minX, minY, maxX, maxY };
+  }
 
   function duplicateElement(el) {
     const c = JSON.parse(JSON.stringify(el));
     delete c.id;
     c.x += 26; c.y += 26;
     const ne = addElement(c);
-    select(ne.id);
     return ne;
+  }
+  function duplicateSelection() {
+    const src = getSelectedEls();
+    if (!src.length) return;
+    const made = src.map((el) => duplicateElement(el));
+    setSelection(made.map((e) => e.id));
+  }
+  function removeSelection() {
+    const ids = [...selectedIds];
+    selectedIds = new Set();
+    for (const id of ids) removeElement(id);
+    setSelection([]);
   }
 
   // selection overlay in screen space
   function updateSelbox() {
-    const el = getSelected();
-    if (!el) { selbox.classList.remove('active'); return; }
+    const els = getSelectedEls();
+    if (!els.length) { selbox.classList.remove('active'); return; }
     const { zoom } = state.view;
-    const cx = state.view.panX + (el.x + el.w / 2) * zoom;
-    const cy = state.view.panY + (el.y + el.h / 2) * zoom;
-    const w = el.w * zoom, h = el.h * zoom;
-    selbox.style.left = cx + 'px';
-    selbox.style.top = cy + 'px';
-    selbox.style.width = w + 'px';
-    selbox.style.height = h + 'px';
-    selbox.style.transform = `translate(-50%, -50%) rotate(${el.rot}deg)`;
+    if (els.length === 1) {
+      // single: frame + handles, rotated to the element
+      const el = els[0];
+      const cx = state.view.panX + (el.x + el.w / 2) * zoom;
+      const cy = state.view.panY + (el.y + el.h / 2) * zoom;
+      selbox.style.left = cx + 'px';
+      selbox.style.top = cy + 'px';
+      selbox.style.width = (el.w * zoom) + 'px';
+      selbox.style.height = (el.h * zoom) + 'px';
+      selbox.style.transform = `translate(-50%, -50%) rotate(${el.rot}deg)`;
+      selbox.classList.add('single');
+      selbox.classList.remove('multi');
+    } else {
+      // multiple: axis-aligned bounding frame, no handles
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      for (const el of els) {
+        const b = elAABB(el);
+        if (b.minX < minX) minX = b.minX; if (b.minY < minY) minY = b.minY;
+        if (b.maxX > maxX) maxX = b.maxX; if (b.maxY > maxY) maxY = b.maxY;
+      }
+      const sx = state.view.panX + minX * zoom;
+      const sy = state.view.panY + minY * zoom;
+      selbox.style.left = (sx + (maxX - minX) * zoom / 2) + 'px';
+      selbox.style.top = (sy + (maxY - minY) * zoom / 2) + 'px';
+      selbox.style.width = ((maxX - minX) * zoom) + 'px';
+      selbox.style.height = ((maxY - minY) * zoom) + 'px';
+      selbox.style.transform = 'translate(-50%, -50%) rotate(0deg)';
+      selbox.classList.add('multi');
+      selbox.classList.remove('single');
+    }
     selbox.classList.add('active');
   }
 
@@ -312,12 +371,13 @@
   function onElementPointerDown(e, el) {
     if (e.button === 1) { e.preventDefault(); e.stopPropagation(); startPan(e, true); return; }
     if (editingId === el.id) return;           // let text editing receive the event
-    if (e.button !== 0) return;
+    if (e.button !== 0) return;                // right handled by marquee / context menu
     e.stopPropagation();
-    select(el.id);
-    bringToFront(el);
+    if (e.ctrlKey || e.metaKey) { toggleSelection(el.id); return; }  // multi-select toggle
+    if (!selectedIds.has(el.id)) { select(el.id); bringToFront(el); }  // fresh single select
     const start = screenToWorld(e.clientX, e.clientY);
-    drag = { kind: 'move', el, startX: el.x, startY: el.y, startWX: start.x, startWY: start.y, moved: false };
+    const moving = getSelectedEls().map((se) => ({ el: se, sx: se.x, sy: se.y }));
+    drag = { kind: 'move', moving, startWX: start.x, startWY: start.y, moved: false };
     window.addEventListener('pointermove', onPointerMove);
     window.addEventListener('pointerup', onPointerUp, { once: true });
   }
@@ -370,10 +430,9 @@
     }
     if (drag.kind === 'move') {
       const p = screenToWorld(e.clientX, e.clientY);
-      drag.el.x = drag.startX + (p.x - drag.startWX);
-      drag.el.y = drag.startY + (p.y - drag.startWY);
+      const dx = p.x - drag.startWX, dy = p.y - drag.startWY;
+      for (const m of drag.moving) { m.el.x = m.sx + dx; m.el.y = m.sy + dy; placeNode(m.el); }
       drag.moved = true;
-      placeNode(drag.el);
       updateSelbox();
       return;
     }
@@ -671,8 +730,59 @@
   }
 
   // ---------- canvas background interactions ----------
+  // shift + left-drag = marquee selection (capture phase, before element/pan handlers)
+  let marquee = null;
+  const marqueeEl = $('#marquee');
+  window.addEventListener('pointerdown', (e) => {
+    if (e.button === 0 && e.shiftKey) {
+      e.preventDefault();
+      e.stopPropagation();
+      hideMenus();
+      marquee = { sx: e.clientX, sy: e.clientY, add: (e.ctrlKey || e.metaKey), base: new Set(selectedIds) };
+      marqueeEl.classList.add('active');
+      positionMarquee(e.clientX, e.clientY);
+      window.addEventListener('pointermove', onMarqueeMove);
+      window.addEventListener('pointerup', onMarqueeUp, { once: true });
+    }
+  }, true);
+  function positionMarquee(x, y) {
+    const x1 = Math.min(marquee.sx, x), y1 = Math.min(marquee.sy, y);
+    marqueeEl.style.left = x1 + 'px';
+    marqueeEl.style.top = y1 + 'px';
+    marqueeEl.style.width = Math.abs(x - marquee.sx) + 'px';
+    marqueeEl.style.height = Math.abs(y - marquee.sy) + 'px';
+  }
+  function onMarqueeMove(e) {
+    if (!marquee) return;
+    positionMarquee(e.clientX, e.clientY);
+    // live preview of what's inside
+    const ids = marqueeHits(e.clientX, e.clientY);
+    const set = marquee.add ? new Set([...marquee.base, ...ids]) : new Set(ids);
+    for (const [eid, n] of nodes) n.classList.toggle('is-selected', set.has(eid));
+  }
+  function marqueeHits(x, y) {
+    const a = screenToWorld(Math.min(marquee.sx, x), Math.min(marquee.sy, y));
+    const b = screenToWorld(Math.max(marquee.sx, x), Math.max(marquee.sy, y));
+    const r = { minX: a.x, minY: a.y, maxX: b.x, maxY: b.y };
+    const hits = [];
+    for (const el of state.elements) {
+      const e2 = elAABB(el);
+      if (e2.minX <= r.maxX && e2.maxX >= r.minX && e2.minY <= r.maxY && e2.maxY >= r.minY) hits.push(el.id);
+    }
+    return hits;
+  }
+  function onMarqueeUp(e) {
+    window.removeEventListener('pointermove', onMarqueeMove);
+    marqueeEl.classList.remove('active');
+    const ids = marqueeHits(e.clientX, e.clientY);
+    const final = marquee.add ? new Set([...marquee.base, ...ids]) : ids;
+    marquee = null;
+    setSelection([...final]);
+  }
+
   viewport.addEventListener('pointerdown', (e) => {
     if (e.button === 1) { e.preventDefault(); startPan(e, true); return; }
+    if (e.button === 2) return;         // right button -> context menu / marquee
     if (e.target === viewport || e.target === world) startPan(e, false);
   });
   // suppress middle-click autoscroll
@@ -743,12 +853,15 @@
   // ---------- keyboard ----------
   window.addEventListener('keydown', (e) => {
     if (editingId) { if (e.key === 'Escape') stopEditing(); return; }
-    const el = getSelected();
-    if ((e.key === 'Delete' || e.key === 'Backspace') && el) { e.preventDefault(); removeElement(el.id); }
+    const els = getSelectedEls();
+    const one = getSelected();
+    if ((e.key === 'Delete' || e.key === 'Backspace') && els.length) { e.preventDefault(); removeSelection(); }
     else if (e.key === 'Escape') select(null);
-    else if (el && (e.key === ']')) bringToFront(el);
-    else if (el && (e.key === '[')) sendToBack(el);
-    else if (el && e.key === 'Enter' && el.type === 'note') { e.preventDefault(); startEditing(el); }
+    else if (els.length && e.key === ']') els.forEach(bringToFront);
+    else if (els.length && e.key === '[') els.forEach(sendToBack);
+    else if ((e.ctrlKey || e.metaKey) && (e.key === 'd' || e.key === 'D') && els.length) { e.preventDefault(); duplicateSelection(); }
+    else if ((e.ctrlKey || e.metaKey) && (e.key === 'a' || e.key === 'A')) { e.preventDefault(); setSelection(state.elements.map((x) => x.id)); }
+    else if (one && e.key === 'Enter' && one.type === 'note') { e.preventDefault(); startEditing(one); }
   });
 
   // ---------- chrome wiring ----------
@@ -832,10 +945,12 @@
     hideMenus();
     const node = e.target.closest('.el');
     if (node) {
-      select(node.dataset.id);
-      const el = getSelected();
+      if (!selectedIds.has(node.dataset.id)) select(node.dataset.id);  // keep group if right-clicking a member
+      const one = getSelected();
       ctxmenu.querySelector('[data-act="download"]').style.display =
-        (el && (el.type === 'image' || el.type === 'pdf' || el.type === 'text' || el.type === 'chip')) ? '' : 'none';
+        (one && (one.type === 'image' || one.type === 'pdf' || one.type === 'text' || one.type === 'chip')) ? '' : 'none';
+      const dup = ctxmenu.querySelector('[data-act="dup"] span');
+      if (dup) dup.textContent = selectedIds.size > 1 ? 'Duplicate ' + selectedIds.size + ' items' : 'Duplicate';
       placeMenu(ctxmenu, e.clientX, e.clientY);
     } else {
       select(null);
@@ -847,14 +962,14 @@
   ctxmenu.addEventListener('click', (e) => {
     const btn = e.target.closest('button');
     if (!btn) return;
-    const el = getSelected();
-    if (!el) { hideMenus(); return; }
+    const els = getSelectedEls();
+    if (!els.length) { hideMenus(); return; }
     switch (btn.dataset.act) {
-      case 'delete': removeElement(el.id); break;
-      case 'back': sendToBack(el); break;
-      case 'front': bringToFront(el); break;
-      case 'dup': duplicateElement(el); break;
-      case 'download': downloadElement(el); break;
+      case 'delete': removeSelection(); break;
+      case 'back': els.forEach(sendToBack); break;
+      case 'front': els.forEach(bringToFront); break;
+      case 'dup': duplicateSelection(); break;
+      case 'download': if (els.length === 1) downloadElement(els[0]); break;
     }
     hideMenus();
   });
@@ -903,7 +1018,7 @@
     }
   }
 
-  window.addEventListener('pointerdown', (e) => { if (!e.target.closest('.ctx')) hideMenus(); }, true);
+  window.addEventListener('pointerdown', (e) => { if (!(e.target instanceof Element) || !e.target.closest('.ctx')) hideMenus(); }, true);
   window.addEventListener('wheel', hideMenus, { passive: true });
 
   // ---------- theme toggle ----------
